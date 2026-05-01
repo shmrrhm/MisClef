@@ -621,6 +621,15 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
 
         pbar.set_postfix(staves=len(staves), notes=total)
 
+    for page in doc:
+        page.insert_text(
+            fitz.Point(page.rect.width - 110, 12),
+            'Annotated by MisClef',
+            fontsize=8,
+            color=(0.5, 0.5, 0.5),
+            fontname='helv',
+        )
+
     doc.save(output_path)
     doc.close()
     print(f'Saved: {output_path}')
