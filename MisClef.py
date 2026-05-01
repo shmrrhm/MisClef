@@ -630,7 +630,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Annotate piano sheet music PDF with note-name labels.'
     )
-    parser.add_argument('input', type=Path, help='Path to the input PDF file')
+    parser.add_argument('input', type=Path, nargs='?', default=Path(__file__).parent / 'Music' / 'Secrets.pdf', help='Path to the input PDF file')
     parser.add_argument(
         '-o', '--output', type=Path, default=None,
         help='Path for the annotated output PDF (default: <input stem> - Annotated.pdf)'
