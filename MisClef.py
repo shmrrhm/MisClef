@@ -24,11 +24,19 @@ import argparse
 import os
 import sys
 import tempfile
+import time
+import urllib.request
 from pathlib import Path
+import cv2
 import fitz          # PyMuPDF
 import numpy as np
-import cv2
+import onnxruntime as _ort
+from PIL import Image as _PIL
 from tqdm import tqdm
+from oemer import MODULE_PATH as _MP
+from oemer.inference import inference as _infer
+
+_ort.set_default_logger_severity(3)   # suppress CUDA EP fallback warnings (ERROR-only)
 
 # ─── User configuration ───────────────────────────────────────────────────────
 
@@ -93,8 +101,6 @@ _OEMER_CHECKPOINTS = {
 
 def _ensure_oemer_checkpoints():
     """Download missing oemer ONNX checkpoint files on first use."""
-    import urllib.request
-    from oemer import MODULE_PATH as _MP
     for folder, url in _OEMER_CHECKPOINTS.items():
         dest = os.path.join(_MP, 'checkpoints', folder, 'model.onnx')
         if not os.path.exists(dest):
@@ -111,12 +117,7 @@ def _oemer_notehead_map_for_page(gray_np):
     automatically from GitHub on the first call.
     """
     _ensure_oemer_checkpoints()
-    import onnxruntime as _ort
-    _ort.set_default_logger_severity(3)   # suppress CUDA EP fallback warnings (ERROR-only)
     print('ONNX providers:', _ort.get_available_providers(), flush=True)
-    from PIL import Image as _PIL
-    from oemer import MODULE_PATH as _MP
-    from oemer.inference import inference as _infer
 
     h, w = gray_np.shape
     rgb = np.dstack([gray_np] * 3)          # oemer expects an RGB image
@@ -654,4 +655,7 @@ if __name__ == '__main__':
     pdf_path = args.input
     output_path = args.output or pdf_path.with_name(pdf_path.stem + ' - Annotated.pdf')
 
+    t0 = time.perf_counter()
     annotate_pdf(pdf_path, output_path, args.key)
+    elapsed = time.perf_counter() - t0
+    print(f'Runtime: {elapsed:.1f}s')

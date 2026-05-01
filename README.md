@@ -31,3 +31,11 @@ By default, MisClef runs inference on CPU. For significantly faster processing, 
    ```
 
 When a compatible GPU is detected, inference will automatically use CUDA, dramatically reducing processing time for multi-page scores.
+
+### Benchmarks
+
+Measured on a 7-page score (oemer UNet, CUDA execution provider):
+
+| Hardware | CUDA | Pages | Min | Avg | Max |
+|---|---|---|---|---|---|
+| NVIDIA GeForce RTX 3070 (8 GB) | 12.6 | 7 | 22.55 s/page | 22.91 s/page | 24.04 s/page |

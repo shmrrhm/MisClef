@@ -1,6 +1,7 @@
 pymupdf
 numpy
 opencv-python
-oemer
 onnxruntime-gpu
+Pillow
+oemer
 tqdm
