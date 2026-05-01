@@ -34,8 +34,9 @@ When a compatible GPU is detected, inference will automatically use CUDA, dramat
 
 ### Benchmarks
 
-Measured on a 7-page score (oemer UNet, CUDA execution provider):
+Measured on a several score sheets (oemer UNet, CUDA execution provider):
 
-| Hardware | CUDA | Pages | Min | Avg | Max |
-|---|---|---|---|---|---|
-| NVIDIA GeForce RTX 3070 (8 GB) | 12.6 | 7 | 22.55 s/page | 22.91 s/page | 24.04 s/page |
+| Hardware | CUDA | Score | Pages | Min | Avg | Max |
+|---|---|---|---|---|---|---|
+| NVIDIA GeForce RTX 3070 (8 GB) | 12.6 | Secrets | 7 | 22 s/page | 22 s/page | 24 s/page |
+| NVIDIA GeForce RTX 3070 (8 GB) | 12.6 | Nocturne | 4 | 25 s/page | 25 s/page | 25 s/page |
