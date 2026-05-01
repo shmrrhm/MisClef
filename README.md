@@ -1,6 +1,10 @@
 # 🎵 MisClef
 MisClef turns the "mischief" of complex sheet music into readable data. Designed for the musically illiterate — whether you're struggling with the staff or feeling "clef-less," MisClef transcribes chaos into clarity. 🎹
 
+## How it works 👁️
+
+MisClef uses **computer vision** and **Optical Music Recognition (OMR)** — it analyses sheet music as an image, not as structured data. The pipeline renders each PDF page to a pixel image, detects staff lines geometrically, and then uses a deep-learning UNet model to locate note heads directly in the image. Because it reads pixels rather than file metadata, it works on **any PDF** — including scanned or photographed scores — with no requirement for MusicXML, MIDI, or any other structured music notation format.
+
 ## Credits 🙏
 
 Notehead detection is powered by **[oemer](https://github.com/BreezeWhite/oemer)** by BreezeWhite — an end-to-end optical music recognition library whose UNet segmentation model is used here to accurately locate note heads on each staff.
