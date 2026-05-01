@@ -38,5 +38,4 @@ Measured on a several score sheets (oemer UNet, CUDA execution provider):
 
 | Hardware | CUDA | Score | Pages | Min | Avg | Max |
 |---|---|---|---|---|---|---|
-| NVIDIA GeForce RTX 3070 (8 GB) | 12.6 | Secrets | 7 | 22 s/page | 22 s/page | 24 s/page |
 | NVIDIA GeForce RTX 3070 (8 GB) | 12.6 | Nocturne | 4 | 25 s/page | 25 s/page | 25 s/page |
