@@ -1,6 +1,5 @@
 """MisClef.py
-Annotates piano sheet music PDF with blue note-name labels (e.g. B, C#)
-offset to the top-right of each note head.
+Annotates piano sheet music PDF with blue note-name labels (e.g. B, C#) offset to the top-right of each note head.
 
 Detection pipeline (per page, per stave):
   1. Render page at SCALE x to grayscale.
