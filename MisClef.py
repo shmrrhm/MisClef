@@ -27,6 +27,7 @@ from pathlib import Path
 import fitz          # PyMuPDF
 import numpy as np
 import cv2
+from tqdm import tqdm
 
 # ─── User configuration ───────────────────────────────────────────────────────
 
@@ -48,12 +49,12 @@ USE_OEMER         = True  # True → replace HoughCircles with oemer's UNet note
 # ─── Detection hyperparameters (tuned by MisClef-trainer.py) ─────────────────
 
 HOUGH_PARAM1    = 50    # Canny high threshold
-HOUGH_PARAM2    = 9     # Hough accumulator threshold (lower → more circles found)
+HOUGH_PARAM2    = 7     # Hough accumulator threshold (lower → more circles found)
 MIN_R_FACTOR    = 0.27  # min-radius as fraction of staff spacing
 MAX_R_FACTOR    = 0.58  # max-radius as fraction of staff spacing
-MIN_DIST_FACTOR = 0.55  # min centre-to-centre distance as fraction of staff spacing
-DENSITY_MIN     = 0.12  # minimum ink density in bounding patch
-CIRCULARITY_MIN = 0.4  # minimum circularity (4π·area / perimeter²)
+MIN_DIST_FACTOR = 0.48  # min centre-to-centre distance as fraction of staff spacing
+DENSITY_MIN     = 0.10  # minimum ink density in bounding patch
+CIRCULARITY_MIN = 0.35  # minimum circularity (4π·area / perimeter²)
 
 # ─── Music theory helpers ─────────────────────────────────────────────────────
 
@@ -111,6 +112,9 @@ def _oemer_notehead_map_for_page(gray_np):
     automatically from GitHub on the first call.
     """
     _ensure_oemer_checkpoints()
+    import onnxruntime as _ort
+    _ort.set_default_logger_severity(3)   # suppress CUDA EP fallback warnings (ERROR-only)
+    print('ONNX providers:', _ort.get_available_providers(), flush=True)
     from PIL import Image as _PIL
     from oemer import MODULE_PATH as _MP
     from oemer.inference import inference as _infer
@@ -481,8 +485,7 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
     acc = key_accidentals(key_sig)
     doc = fitz.open(pdf_path)
 
-    for page_num, page in enumerate(doc):
-        print(f'Page {page_num + 1}/{len(doc)} ...', end='  ', flush=True)
+    for page_num, page in (pbar := tqdm(enumerate(doc), total=len(doc), desc='Annotating', unit='page')):
 
         # Render to grayscale at high resolution
         mat  = fitz.Matrix(SCALE, SCALE)
@@ -494,11 +497,11 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
         line_ys = find_staff_lines(binary)
         staves  = group_staves(line_ys)
         if not staves:
-            print('no staves detected')
+            pbar.write(f'Page {page_num + 1}: no staves detected')
             continue
 
         if USE_OEMER:
-            print('running oemer ...', end='  ', flush=True)
+            pbar.set_postfix_str('running oemer…')
             notehead_mask = _oemer_notehead_map_for_page(gray)
 
         # Piano grand staff: staves come in pairs – top = treble, bottom = bass
@@ -579,11 +582,11 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
                 )
                 total += 1
 
-        print(f'{len(staves)} staves, {total} notes annotated')
+        pbar.set_postfix(staves=len(staves), notes=total)
 
     doc.save(output_path)
     doc.close()
-    print(f'\nSaved: {output_path}')
+    print(f'Saved: {output_path}')
 
 
 if __name__ == '__main__':
