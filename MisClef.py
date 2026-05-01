@@ -20,6 +20,7 @@ Key signature:
   Positive integers add sharps (F# C# G# …); negative add flats (Bb Eb Ab …).
 """
 
+import argparse
 import os
 import sys
 import tempfile
@@ -32,11 +33,9 @@ from tqdm import tqdm
 # ─── User configuration ───────────────────────────────────────────────────────
 
 _HERE = Path(__file__).parent
-PDF_PATH    = _HERE / 'Music' / 'Secrets.pdf'
-OUTPUT_PATH = _HERE / 'Music' / 'Secrets - Annotated.pdf'
 
 SCALE        = 3.0   # render scale (3× ≈ 216 DPI from 72-pt base)
-KEY_SIG      = 2     # 2 sharps = D major / B minor (F#, C#)
+KEY_SIG      = 0     # default: C major / A minor (no sharps/flats)
 FONT_SIZE    = 6.5   # label size in PDF points
 BLUE         = (0, 0, 1)  # RGB 0-1 for fitz
 CLEF_SKIP_SP      = 4.0   # staff-spacings reserved for the clef symbol at the staff left
@@ -147,8 +146,10 @@ def detect_heads_in_stave_oemer(notehead_mask, stave, staves,
                                  bot_clip_y=None, right_clip_px=None):
     """
     Detect note heads from oemer's binary notehead segmentation mask using
-    HoughCircles (same params as the Hough-only path, but on a clean mask
-    instead of a staff-cleaned grayscale image).
+    connected-component centroids – one centroid per blob, so neither
+    double-printing (two Hough circles per notehead) nor Hough false-negatives
+    (missed blobs that aren't perfectly circular) can occur.
+    Blobs larger than ~2 single noteheads are split via distance transform.
     Returns list of (cx, cy, radius) in full-image pixel coordinates.
     """
     sp  = stave['sp']
@@ -187,30 +188,66 @@ def detect_heads_in_stave_oemer(notehead_mask, stave, staves,
     if not np.any(roi):
         return []
 
-    # Invert so noteheads are dark (0) on a white (255) background, then blur
-    hough_img = (255 * (1 - roi)).astype(np.uint8)
-    blurred   = cv2.GaussianBlur(hough_img, (5, 5), 1.5)
+    min_r = max(3, int(sp * MIN_R_FACTOR))
+    max_r = max(5, int(sp * MAX_R_FACTOR))
+    # Area thresholds for a single notehead blob
+    min_area    = int(np.pi * min_r ** 2 * 0.35)          # below → noise
+    single_area = int(np.pi * max_r ** 2 * 1.8)           # above → likely merged
 
-    min_r    = max(3, int(sp * MIN_R_FACTOR))
-    max_r    = max(5, int(sp * MAX_R_FACTOR))
-    min_dist = int(sp * MIN_DIST_FACTOR)
-
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=min_dist,
-        param1=HOUGH_PARAM1,
-        param2=HOUGH_PARAM2,
-        minRadius=min_r,
-        maxRadius=max_r,
+    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        roi, connectivity=8
     )
 
     heads = []
-    if circles is None:
-        return heads
-    for cx, cy, r in np.round(circles[0]).astype(int):
-        heads.append((int(cx), int(cy) + y0, int(r)))
+    for label_id in range(1, n_labels):   # 0 is background
+        area = stats[label_id, cv2.CC_STAT_AREA]
+        if area < min_area:
+            continue   # noise / artefact
+
+        if area <= single_area:
+            # Single notehead – use the blob centroid directly
+            r    = max(min_r, min(int(round(np.sqrt(area / np.pi))), max_r))
+            cx_l = int(round(centroids[label_id][0]))
+            cy_l = int(round(centroids[label_id][1]))
+            candidates = [(cx_l, cy_l, r)]
+        else:
+            # Oversized blob – split by distance-transform local maxima
+            blob_mask = (labels == label_id).astype(np.uint8)
+            dist      = cv2.distanceTransform(blob_mask, cv2.DIST_L2, 5)
+            dmax      = float(dist.max())
+            if dmax < min_r * 0.4:
+                continue
+            _, peaks = cv2.threshold(dist, dmax * 0.5, 255, cv2.THRESH_BINARY)
+            peaks = peaks.astype(np.uint8)
+            n_pk, _, pk_stats, pk_cents = cv2.connectedComponentsWithStats(
+                peaks, connectivity=8
+            )
+            candidates = []
+            for pk_id in range(1, n_pk):
+                pk_area = pk_stats[pk_id, cv2.CC_STAT_AREA]
+                r_pk    = max(min_r, min(int(round(np.sqrt(pk_area / np.pi))), max_r))
+                candidates.append((
+                    int(round(pk_cents[pk_id][0])),
+                    int(round(pk_cents[pk_id][1])),
+                    r_pk,
+                ))
+
+        for cx_l, cy_l, r in candidates:
+            cx_g = cx_l
+            cy_g = cy_l + y0
+
+            # Boundary sanity checks (mirror the blanking above)
+            if left_skip_px > 0 and cx_g < left_skip_px:
+                continue
+            if top_margin_px > 0 and (cy_g - y0) < top_margin_px:
+                continue
+            if bot_clip_y is not None and cy_g > bot_clip_y:
+                continue
+            if right_clip_px is not None and cx_g > right_clip_px:
+                continue
+
+            heads.append((cx_g, cy_g, r))
+
     return heads
 
 
@@ -590,4 +627,22 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
 
 
 if __name__ == '__main__':
-    annotate_pdf(PDF_PATH, OUTPUT_PATH, KEY_SIG)
+    parser = argparse.ArgumentParser(
+        description='Annotate piano sheet music PDF with note-name labels.'
+    )
+    parser.add_argument('input', type=Path, help='Path to the input PDF file')
+    parser.add_argument(
+        '-o', '--output', type=Path, default=None,
+        help='Path for the annotated output PDF (default: <input stem> - Annotated.pdf)'
+    )
+    parser.add_argument(
+        '-k', '--key', type=int, default=KEY_SIG,
+        metavar='N',
+        help='Key signature: positive = sharps, negative = flats (default: %(default)s)'
+    )
+    args = parser.parse_args()
+
+    pdf_path = args.input
+    output_path = args.output or pdf_path.with_name(pdf_path.stem + ' - Annotated.pdf')
+
+    annotate_pdf(pdf_path, output_path, args.key)
