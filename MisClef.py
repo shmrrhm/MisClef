@@ -22,20 +22,16 @@ Key signature:
 """
 
 import sys
+from pathlib import Path
 import fitz          # PyMuPDF
 import numpy as np
 import cv2
 
 # ─── User configuration ───────────────────────────────────────────────────────
 
-PDF_PATH = (
-    r'c:\Users\mdsha\Dropbox\[Backup] HD-PZU3 (from May 2015)'
-    r'\3) Shamir\Piano 101\Secrets by One Republic.pdf'
-)
-OUTPUT_PATH = (
-    r'c:\Users\mdsha\Dropbox\[Backup] HD-PZU3 (from May 2015)'
-    r'\3) Shamir\Piano 101\Secrets by One Republic - Annotated.pdf'
-)
+_HERE = Path(__file__).parent
+PDF_PATH    = _HERE / 'Music' / 'Secrets.pdf'
+OUTPUT_PATH = _HERE / 'Music' / 'Secrets - Annotated.pdf'
 
 SCALE        = 3.0   # render scale (3× ≈ 216 DPI from 72-pt base)
 KEY_SIG      = 2     # 2 sharps = D major / B minor (F#, C#)
