@@ -20,7 +20,9 @@ Key signature:
   Positive integers add sharps (F# C# G# …); negative add flats (Bb Eb Ab …).
 """
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 import fitz          # PyMuPDF
 import numpy as np
@@ -41,6 +43,17 @@ KEYSIG_SP_PER_ACC = 1.5   # additional staff-spacings per sharp/flat in the key 
 TIMESIG_SP        = 2.5   # extra staff-spacings for the time signature (4/4 etc.) on the first system
 TEMPO_SP          = 2.0   # extra staff-spacings for the tempo mark (♩ = 150 etc.) on the first system
 LYRIC_SKIP_SP     = 2.5   # skip detections more than this many staff-spacings below the bottom staff line (lyrics zone)
+USE_OEMER         = True  # True → replace HoughCircles with oemer's UNet notehead model
+
+# ─── Detection hyperparameters (tuned by MisClef-trainer.py) ─────────────────
+
+HOUGH_PARAM1    = 50    # Canny high threshold
+HOUGH_PARAM2    = 9     # Hough accumulator threshold (lower → more circles found)
+MIN_R_FACTOR    = 0.27  # min-radius as fraction of staff spacing
+MAX_R_FACTOR    = 0.58  # max-radius as fraction of staff spacing
+MIN_DIST_FACTOR = 0.55  # min centre-to-centre distance as fraction of staff spacing
+DENSITY_MIN     = 0.12  # minimum ink density in bounding patch
+CIRCULARITY_MIN = 0.4  # minimum circularity (4π·area / perimeter²)
 
 # ─── Music theory helpers ─────────────────────────────────────────────────────
 
@@ -69,6 +82,132 @@ def pitch_name(diatonic_pos, clef, accidentals):
     if note in accidentals:
         note += accidentals[note]
     return note
+
+
+# ─── oemer notehead model ─────────────────────────────────────────────────────
+
+_OEMER_CHECKPOINTS = {
+    'seg_net': 'https://github.com/BreezeWhite/oemer/releases/download/checkpoints/2nd_model.onnx',
+}
+
+
+def _ensure_oemer_checkpoints():
+    """Download missing oemer ONNX checkpoint files on first use."""
+    import urllib.request
+    from oemer import MODULE_PATH as _MP
+    for folder, url in _OEMER_CHECKPOINTS.items():
+        dest = os.path.join(_MP, 'checkpoints', folder, 'model.onnx')
+        if not os.path.exists(dest):
+            print(f'Downloading oemer {folder} checkpoint (~37 MB) ...', flush=True)
+            urllib.request.urlretrieve(url, dest)
+            print(f'Saved to {dest}')
+
+
+def _oemer_notehead_map_for_page(gray_np):
+    """
+    Run oemer's seg_net UNet on one page (grayscale numpy array) and return a
+    binary notehead mask (uint8, 1 where a notehead is predicted) scaled back to
+    the same H×W as the input.  Model checkpoints (~40 MB) are downloaded
+    automatically from GitHub on the first call.
+    """
+    _ensure_oemer_checkpoints()
+    from PIL import Image as _PIL
+    from oemer import MODULE_PATH as _MP
+    from oemer.inference import inference as _infer
+
+    h, w = gray_np.shape
+    rgb = np.dstack([gray_np] * 3)          # oemer expects an RGB image
+
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tf:
+        tmp = tf.name
+    try:
+        _PIL.fromarray(rgb).save(tmp)
+        # seg_net outputs: 0=background, 1=stems/rests, 2=noteheads, 3=clefs/keys
+        sep, _ = _infer(
+            os.path.join(_MP, 'checkpoints/seg_net'),
+            tmp,
+            manual_th=None,
+            use_tf=False,
+        )
+    finally:
+        os.unlink(tmp)
+
+    notehead = (sep == 2).astype(np.uint8)
+    if notehead.shape[:2] != (h, w):
+        notehead = cv2.resize(notehead, (w, h), interpolation=cv2.INTER_NEAREST)
+    return notehead
+
+
+def detect_heads_in_stave_oemer(notehead_mask, stave, staves,
+                                 left_skip_px=0, top_margin_px=0,
+                                 bot_clip_y=None, right_clip_px=None):
+    """
+    Detect note heads from oemer's binary notehead segmentation mask using
+    HoughCircles (same params as the Hough-only path, but on a clean mask
+    instead of a staff-cleaned grayscale image).
+    Returns list of (cx, cy, radius) in full-image pixel coordinates.
+    """
+    sp  = stave['sp']
+    top = stave['lines'][0]
+    bot = stave['lines'][4]
+    idx = staves.index(stave)
+    h, w = notehead_mask.shape
+    default_pad = int(3.5 * sp)
+
+    if idx > 0:
+        prev_bot = staves[idx - 1]['lines'][4]
+        y0 = max((prev_bot + top) // 2, top - default_pad)
+    else:
+        y0 = max(0, top - default_pad)
+
+    if idx < len(staves) - 1:
+        next_top = staves[idx + 1]['lines'][0]
+        y1 = min((bot + next_top) // 2, bot + default_pad)
+    else:
+        y1 = min(h, bot + default_pad)
+
+    roi = notehead_mask[y0:y1].copy()
+
+    # Apply the same boundary-blanking zones as the Hough path
+    if left_skip_px > 0:
+        roi[:, :left_skip_px] = 0
+    if top_margin_px > 0:
+        roi[:top_margin_px, :] = 0
+    if bot_clip_y is not None:
+        bot_row = max(0, bot_clip_y - y0)
+        if bot_row < roi.shape[0]:
+            roi[bot_row:, :] = 0
+    if right_clip_px is not None and right_clip_px < roi.shape[1]:
+        roi[:, right_clip_px:] = 0
+
+    if not np.any(roi):
+        return []
+
+    # Invert so noteheads are dark (0) on a white (255) background, then blur
+    hough_img = (255 * (1 - roi)).astype(np.uint8)
+    blurred   = cv2.GaussianBlur(hough_img, (5, 5), 1.5)
+
+    min_r    = max(3, int(sp * MIN_R_FACTOR))
+    max_r    = max(5, int(sp * MAX_R_FACTOR))
+    min_dist = int(sp * MIN_DIST_FACTOR)
+
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=min_dist,
+        param1=HOUGH_PARAM1,
+        param2=HOUGH_PARAM2,
+        minRadius=min_r,
+        maxRadius=max_r,
+    )
+
+    heads = []
+    if circles is None:
+        return heads
+    for cx, cy, r in np.round(circles[0]).astype(int):
+        heads.append((int(cx), int(cy) + y0, int(r)))
+    return heads
 
 
 # ─── Staff-line detection ─────────────────────────────────────────────────────
@@ -253,17 +392,17 @@ def detect_heads_in_stave(gray, binary, stave, staves, left_skip_px=0, top_margi
     # Slight Gaussian blur helps Hough accumulator
     blurred = cv2.GaussianBlur(clean_gray, (5, 5), 1.5)
 
-    min_r    = max(3, int(sp * 0.27))
-    max_r    = max(5, int(sp * 0.58))
-    min_dist = int(sp * 0.55)       # minimum gap between two note centres
+    min_r    = max(3, int(sp * MIN_R_FACTOR))
+    max_r    = max(5, int(sp * MAX_R_FACTOR))
+    min_dist = int(sp * MIN_DIST_FACTOR)    # minimum gap between two note centres
 
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
         dp=1,
         minDist=min_dist,
-        param1=50,   # Canny high threshold
-        param2=9,    # accumulator threshold – lower = more circles found
+        param1=HOUGH_PARAM1,
+        param2=HOUGH_PARAM2,
         minRadius=min_r,
         maxRadius=max_r,
     )
@@ -301,7 +440,7 @@ def detect_heads_in_stave(gray, binary, stave, staves, left_skip_px=0, top_margi
         x1c = max(0, cx_g - int(r));  x2c = min(binary.shape[1], cx_g + int(r) + 1)
         patch   = binary[y1c:y2c, x1c:x2c]
         density = np.sum(patch) / (max(patch.size, 1) * 255)
-        if density < 0.12:            # skip near-empty regions
+        if density < DENSITY_MIN:       # skip near-empty regions
             continue
 
         # Circularity check: rests, clefs, and other non-note symbols are
@@ -315,7 +454,7 @@ def detect_heads_in_stave(gray, binary, stave, staves, left_skip_px=0, top_margi
             perim_c = cv2.arcLength(largest, True)
             if perim_c > 0:
                 circularity = 4 * np.pi * area_c / (perim_c ** 2)
-                if circularity < 0.40:   # reject rests / irregular symbols
+                if circularity < CIRCULARITY_MIN:   # reject rests / irregular symbols
                     continue
 
         heads.append((cx_g, cy_g, int(r)))
@@ -358,6 +497,10 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
             print('no staves detected')
             continue
 
+        if USE_OEMER:
+            print('running oemer ...', end='  ', flush=True)
+            notehead_mask = _oemer_notehead_map_for_page(gray)
+
         # Piano grand staff: staves come in pairs – top = treble, bottom = bass
         for i, s in enumerate(staves):
             s['clef'] = 'treble' if (i % 2 == 0) else 'bass'
@@ -365,18 +508,28 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
         total = 0
         fallback_base_sp = CLEF_SKIP_SP + abs(key_sig) * KEYSIG_SP_PER_ACC
         for stave_idx, stave in enumerate(staves):
+            # Time signature (4/4) only appears on the very first system (page 0, staves 0-1).
+            # Clef + key signature appear at the left of every stave on every page.
+            is_first_system = (page_num == 0 and stave_idx < 2)
             # Detect the first barline dynamically — it marks the boundary
-            # between the header (clef + key sig + time sig) and the first
-            # measure.  Use CLEF_SKIP_SP as the minimum search start so we
-            # skip the opening staff barline at the far left.
-            min_search = int(CLEF_SKIP_SP * stave['sp'])
+            # between the header (clef + key sig [+ time sig on page 0]) and
+            # the first measure.  For the first stave pair of every page
+            # (stave_idx < 2), start the search with an extra TIMESIG_SP margin
+            # so that sharp / flat strokes in the key signature are never
+            # mistaken for a barline and used as an undersized clef_x_limit.
+            min_search = int(fallback_base_sp * stave['sp'])
+            if stave_idx < 2:
+                min_search += int(TIMESIG_SP * stave['sp'])
             barline_x  = find_first_barline_x(binary, stave, min_search_x=min_search)
             if barline_x is not None:
                 clef_x_limit = barline_x
             else:
-                # Fallback: constant-based estimate (includes time sig / tempo)
-                is_first_system = (page_num == 0 and stave_idx < 2)
-                left_skip_sp  = fallback_base_sp + (TIMESIG_SP + TEMPO_SP if is_first_system else 0.0)
+                # Fallback: constant-based estimate
+                left_skip_sp  = fallback_base_sp
+                if stave_idx < 2:
+                    left_skip_sp += TIMESIG_SP
+                if is_first_system:
+                    left_skip_sp += TEMPO_SP
                 clef_x_limit  = int(left_skip_sp * stave['sp'])
             # Blank rows above the first staff on page 0 to suppress the ♩=150
             # tempo mark, which sits above the top staff line in the ROI margin.
@@ -390,11 +543,20 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
                 last_bl = find_last_barline_x(binary, stave)
                 if last_bl is not None:
                     right_clip_px = last_bl
-            heads = detect_heads_in_stave(gray, binary, stave, staves,
-                                          left_skip_px=clef_x_limit,
-                                          top_margin_px=top_margin_px,
-                                          bot_clip_y=int(stave['lines'][4] + LYRIC_SKIP_SP * stave['sp']),
-                                          right_clip_px=right_clip_px)
+            if USE_OEMER:
+                heads = detect_heads_in_stave_oemer(
+                    notehead_mask, stave, staves,
+                    left_skip_px=clef_x_limit,
+                    top_margin_px=top_margin_px,
+                    bot_clip_y=int(stave['lines'][4] + LYRIC_SKIP_SP * stave['sp']),
+                    right_clip_px=right_clip_px,
+                )
+            else:
+                heads = detect_heads_in_stave(gray, binary, stave, staves,
+                                              left_skip_px=clef_x_limit,
+                                              top_margin_px=top_margin_px,
+                                              bot_clip_y=int(stave['lines'][4] + LYRIC_SKIP_SP * stave['sp']),
+                                              right_clip_px=right_clip_px)
             for (cx, cy, r) in heads:
                 pos  = y_to_diatonic_pos(cy, stave)
                 name = pitch_name(pos, stave['clef'], acc)
