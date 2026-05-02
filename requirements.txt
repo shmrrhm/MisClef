@@ -1,7 +1,8 @@
+streamlit
 pymupdf
 numpy
-opencv-python
-onnxruntime-gpu
+opencv-python-headless
+onnxruntime
 Pillow
 oemer
 tqdm

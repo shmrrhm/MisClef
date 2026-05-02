@@ -519,11 +519,26 @@ def y_to_diatonic_pos(cy, stave):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def annotate_pdf(pdf_path, output_path, key_sig=0):
+def annotate_pdf(pdf_path, output_path, key_sig=0, progress_callback=None):
+    """
+    progress_callback(page_num, total_pages, status) is called:
+      - at the start of each page  (status='rendering')
+      - after stave detection      (status='detecting staves')
+      - before oemer inference     (status='running oemer')
+      - after annotation is done   (status='done')
+    page_num is 0-based; total_pages is the document length.
+    """
     acc = key_accidentals(key_sig)
     doc = fitz.open(pdf_path)
+    total_pages = len(doc)
 
-    for page_num, page in (pbar := tqdm(enumerate(doc), total=len(doc), desc='Annotating', unit='page')):
+    def _cb(page_num, status):
+        if progress_callback is not None:
+            progress_callback(page_num, total_pages, status)
+
+    for page_num, page in (pbar := tqdm(enumerate(doc), total=total_pages, desc='Annotating', unit='page')):
+
+        _cb(page_num, 'rendering')
 
         # Render to grayscale at high resolution
         mat  = fitz.Matrix(SCALE, SCALE)
@@ -532,14 +547,17 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
         _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
         # Detect staves
+        _cb(page_num, 'detecting staves')
         line_ys = find_staff_lines(binary)
         staves  = group_staves(line_ys)
         if not staves:
             pbar.write(f'Page {page_num + 1}: no staves detected')
+            _cb(page_num, 'done')
             continue
 
         if USE_OEMER:
             pbar.set_postfix_str('running oemer…')
+            _cb(page_num, 'running oemer')
             notehead_mask = _oemer_notehead_map_for_page(gray)
 
         # Piano grand staff: staves come in pairs – top = treble, bottom = bass
@@ -621,6 +639,7 @@ def annotate_pdf(pdf_path, output_path, key_sig=0):
                 total += 1
 
         pbar.set_postfix(staves=len(staves), notes=total)
+        _cb(page_num, 'done')
 
     for page in doc:
         page.insert_text(

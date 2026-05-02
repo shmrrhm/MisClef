@@ -1,3 +1,14 @@
+---
+title: MisClef
+emoji: 🎹
+colorFrom: blue
+colorTo: purple
+sdk: streamlit
+sdk_version: 1.44.1
+app_file: app.py
+pinned: false
+---
+
 # 🎵 MisClef
 MisClef turns the "mischief" of complex sheet music into readable data. Designed for the musically illiterate — whether you're struggling with the staff or feeling "clef-less," MisClef transcribes chaos into clarity. 🎹
 
