@@ -28,7 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 import cv2
-import fitz          # PyMuPDF
+import pymupdf as fitz   # PyMuPDF
 import numpy as np
 import onnxruntime as _ort
 from PIL import Image as _PIL
